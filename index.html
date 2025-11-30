@@ -1,0 +1,862 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Level Devil - The Troll Platformer</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #1a1a1a;
+            color: white;
+            font-family: 'Press Start 2P', cursive;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column; /* Stack Game and Controls vertically */
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            touch-action: none; /* Prevent browser zooming/scrolling on mobile */
+        }
+
+        #game-container {
+            position: relative;
+            width: 100%;
+            max-width: 800px;
+            aspect-ratio: 16/9;
+            background: #2b2b2b;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        /* Mobile Controls */
+        #mobile-controls {
+            position: relative; /* Relative to flow, not absolute over game */
+            width: 100%;
+            max-width: 800px;
+            height: auto;
+            pointer-events: auto;
+            display: flex;
+            justify-content: space-between; /* Separate D-Pad and Jump */
+            align-items: center;
+            padding: 20px; /* Space around buttons */
+            box-sizing: border-box;
+            background-color: #1a1a1a; /* Match body background */
+        }
+
+        .d-pad-group {
+            display: flex;
+            gap: 20px; /* Space between Left and Right */
+        }
+
+        .control-btn {
+            position: relative; /* Reset absolute positioning */
+            bottom: auto;
+            left: auto;
+            right: auto;
+            width: 80px;
+            height: 80px;
+            background: rgba(255, 255, 255, 0.1);
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            pointer-events: auto;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 24px;
+            user-select: none;
+            -webkit-user-select: none;
+            cursor: pointer;
+        }
+
+        .control-btn:active {
+            background: rgba(255, 255, 255, 0.3);
+        }
+
+        /* Specific IDs no longer need positioning, just kept for JS logic */
+        #btn-left { }
+        #btn-right { }
+        #btn-jump { }
+
+        #ui-layer {
+            position: absolute;
+            top: 20px;
+            width: 100%;
+            text-align: center;
+            pointer-events: none;
+            text-shadow: 2px 2px 0 #000;
+        }
+
+        #level-title { font-size: 16px; color: #ffcc00; margin-bottom: 10px; }
+        #death-counter { font-size: 12px; color: #ff6666; }
+        
+        #overlay-msg {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: red;
+            font-size: 24px;
+            text-align: center;
+            opacity: 0;
+            transition: opacity 0.2s;
+            pointer-events: none;
+            z-index: 10;
+            text-shadow: 3px 3px 0 #000;
+            width: 100%;
+        }
+
+    </style>
+</head>
+<body>
+
+<div id="game-container">
+    <canvas id="gameCanvas" width="800" height="450"></canvas>
+    
+    <div id="ui-layer">
+        <div id="level-title">Level 1: The First Betrayal</div>
+        <div id="death-counter">DEATHS: 0</div>
+    </div>
+
+    <div id="overlay-msg"></div>
+</div>
+
+<div id="mobile-controls">
+    <div class="d-pad-group">
+        <div class="control-btn" id="btn-left">←</div>
+        <div class="control-btn" id="btn-right">→</div>
+    </div>
+    <div class="control-btn" id="btn-jump">JUMP</div>
+</div>
+
+<script>
+/**
+ * LEVEL DEVIL MVP
+ * A troll platformer engine.
+ */
+
+// --- Constants & Config ---
+const CANVAS_WIDTH = 800;
+const CANVAS_HEIGHT = 450;
+const GRAVITY = 0.6;
+const FRICTION = 0.8;
+const MOVE_SPEED = 0.8;
+const MAX_SPEED = 6;
+const JUMP_FORCE = 12;
+
+// Colors
+const C_PLAYER = '#FFD700'; // Gold
+const C_PLATFORM = '#888888';
+const C_PLATFORM_TRAP = '#888888'; // Looks same as normal
+const C_SPIKE = '#FF4444';
+const C_GOAL = '#44FF44';
+const C_FAKE_GOAL = '#44FF44'; // Looks same as real
+const C_BUTTON = '#FF0000';
+const C_BG = '#2b2b2b';
+
+// --- Game State ---
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const uiTitle = document.getElementById('level-title');
+const uiDeaths = document.getElementById('death-counter');
+const uiMsg = document.getElementById('overlay-msg');
+
+let gameState = {
+    levelIndex: 0,
+    deaths: 0,
+    frame: 0,
+    camera: { x: 0, y: 0, shake: 0 },
+    controlsInverted: false,
+    jumpIsDeath: false,
+    levelComplete: false // Prevents double-triggering wins
+};
+
+// Input State
+const keys = {
+    left: false,
+    right: false,
+    up: false
+};
+
+// --- Entities ---
+
+class Entity {
+    constructor(x, y, w, h, color) {
+        this.x = x;
+        this.y = y;
+        this.w = w;
+        this.h = h;
+        this.color = color;
+        this.vx = 0;
+        this.vy = 0;
+        this.active = true;
+    }
+
+    draw(ctx, camX, camY) {
+        if (!this.active) return;
+        ctx.fillStyle = this.color;
+        ctx.fillRect(this.x - camX, this.y - camY, this.w, this.h);
+    }
+    
+    getBounds() {
+        return {
+            left: this.x,
+            right: this.x + this.w,
+            top: this.y,
+            bottom: this.y + this.h
+        };
+    }
+}
+
+class Player extends Entity {
+    constructor(x, y) {
+        super(x, y, 30, 30, C_PLAYER);
+        this.grounded = false;
+        this.dead = false;
+        this.spawnX = x;
+        this.spawnY = y;
+        this.faceDir = 1;
+    }
+
+    respawn() {
+        this.x = this.spawnX;
+        this.y = this.spawnY;
+        this.vx = 0;
+        this.vy = 0;
+        this.dead = false;
+        this.active = true;
+        
+        // Reset Level Specific Flags
+        resetLevelState();
+    }
+
+    update() {
+        if (this.dead) return;
+
+        // Input Handling
+        let acc = MOVE_SPEED;
+        let leftInput = keys.left;
+        let rightInput = keys.right;
+
+        // Level 4: Inverted Controls logic
+        if (gameState.controlsInverted) {
+            let temp = leftInput;
+            leftInput = rightInput;
+            rightInput = temp;
+        }
+
+        if (leftInput) {
+            this.vx -= acc;
+            this.faceDir = -1;
+        }
+        if (rightInput) {
+            this.vx += acc;
+            this.faceDir = 1;
+        }
+
+        // Friction
+        this.vx *= FRICTION;
+
+        // Speed Limit
+        if (this.vx > MAX_SPEED) this.vx = MAX_SPEED;
+        if (this.vx < -MAX_SPEED) this.vx = -MAX_SPEED;
+
+        // Jump
+        if (keys.up && this.grounded) {
+            if (gameState.jumpIsDeath) {
+                killPlayer("JUMP WAS A BAD IDEA");
+                return;
+            }
+            this.vy = -JUMP_FORCE;
+            this.grounded = false;
+            keys.up = false; // Prevent holding jump
+        }
+
+        // Gravity
+        this.vy += GRAVITY;
+
+        // Apply Velocity
+        this.x += this.vx;
+        this.checkHorizontalCollisions();
+        
+        this.y += this.vy;
+        this.grounded = false; // Assume in air until collision proves otherwise
+        this.checkVerticalCollisions();
+
+        // Bounds check (fall off world)
+        if (this.y > CANVAS_HEIGHT + 100) {
+            killPlayer();
+        }
+    }
+
+    draw(ctx, camX, camY) {
+        if (this.dead) return;
+        super.draw(ctx, camX, camY);
+        
+        // Draw Face
+        ctx.fillStyle = 'black';
+        let eyeOff = this.faceDir === 1 ? 4 : -4;
+        
+        // Eyes
+        ctx.fillRect(this.x + 15 + eyeOff - 8 - camX, this.y + 8 - camY, 4, 4);
+        ctx.fillRect(this.x + 15 + eyeOff + 4 - camX, this.y + 8 - camY, 4, 4);
+        
+        // Mouth (Smile or Frown based on state)
+        if (gameState.controlsInverted) {
+             // Confused mouth
+             ctx.fillRect(this.x + 15 + eyeOff - 4 - camX, this.y + 20 - camY, 8, 2);
+        } else {
+            // Smile
+            ctx.fillRect(this.x + 15 + eyeOff - 4 - camX, this.y + 20 - camY, 8, 2);
+            ctx.fillRect(this.x + 15 + eyeOff - 6 - camX, this.y + 18 - camY, 2, 2);
+            ctx.fillRect(this.x + 15 + eyeOff + 4 - camX, this.y + 18 - camY, 2, 2);
+        }
+    }
+
+    checkHorizontalCollisions() {
+        for (let p of levels[gameState.levelIndex].platforms) {
+            if (!p.active) continue;
+            if (checkRectCollide(this, p)) {
+                // If it's a trigger platform/hazard/goal handled elsewhere, don't collide physics
+                if (p.isHazard || p.isGoal || p.isTrigger) continue;
+
+                if (this.vx > 0) { // Moving right
+                    this.x = p.x - this.w;
+                } else if (this.vx < 0) { // Moving left
+                    this.x = p.x + p.w;
+                }
+                this.vx = 0;
+            }
+        }
+    }
+
+    checkVerticalCollisions() {
+        for (let p of levels[gameState.levelIndex].platforms) {
+            if (!p.active) continue;
+            if (checkRectCollide(this, p)) {
+                
+                // Special Types Logic
+                if (p.isHazard) {
+                    killPlayer();
+                    return;
+                }
+                if (p.isGoal) {
+                    // Level 4 Special Goal Logic
+                    if (gameState.levelIndex === 3) { // Level 4 index
+                         let lvlState = levels[3].customState;
+                         if (!lvlState.goalMoved) {
+                             // First time hitting goal
+                             lvlState.goalMoved = true;
+                             lvlState.floorDropping = true;
+                             
+                             // Teleport Goal
+                             p.x = 50; // Move to start
+                             p.y = 290;
+                             
+                             showMessage("PSYCH! GO BACK!", 1500);
+                             createParticles(this.x, this.y, 20, '#fff');
+                             return; // Don't win yet
+                         }
+                    }
+
+                    if (p.isFake) {
+                        killPlayer("NOPE.");
+                        p.active = false; // Remove fake door
+                    } else {
+                        winLevel();
+                    }
+                    return;
+                }
+                if (p.isButton) {
+                    // Button press logic
+                    if (!p.pressed) {
+                        p.pressed = true;
+                        p.h = p.h / 2; // Squish
+                        p.y += p.h; 
+                        triggerLevelEvent('button_press');
+                    }
+                    // Treat as solid floor for a moment
+                }
+                if (p.isTrigger) {
+                    continue; // Walk through triggers
+                }
+
+                if (this.vy > 0) { // Falling down
+                    this.y = p.y - this.h;
+                    this.grounded = true;
+                    this.vy = 0;
+                    
+                    // Vanishing Platform Logic
+                    if (p.type === 'vanish') {
+                        // Delay vanish slightly for drama or instant
+                        p.active = false;
+                        // Since we just vanished the floor, we aren't grounded anymore technically
+                        // but next frame gravity will take over
+                        createParticles(p.x + p.w/2, p.y + p.h/2, 10, C_PLATFORM);
+                    }
+
+                } else if (this.vy < 0) { // Jumping up
+                    this.y = p.y + p.h;
+                    this.vy = 0;
+                }
+            }
+        }
+    }
+}
+
+class Platform extends Entity {
+    constructor(x, y, w, h, type = 'normal') {
+        let color = C_PLATFORM;
+        if (type === 'spike') color = C_SPIKE;
+        if (type === 'goal') color = C_GOAL;
+        if (type === 'fake_goal') color = C_FAKE_GOAL;
+        if (type === 'button') color = C_BUTTON;
+        if (type === 'invisible') color = 'rgba(0,0,0,0)'; // Transparent
+        
+        super(x, y, w, h, color);
+        this.type = type;
+        this.isHazard = (type === 'spike');
+        this.isGoal = (type === 'goal' || type === 'fake_goal');
+        this.isFake = (type === 'fake_goal');
+        this.isButton = (type === 'button');
+        this.isTrigger = (type === 'trigger');
+        
+        if (this.isTrigger) this.active = false; // Triggers are logical, not physical usually, handled in level update
+        
+        this.startX = x;
+        this.startY = y;
+    }
+    
+    reset() {
+        this.x = this.startX;
+        this.y = this.startY;
+        this.active = true;
+        if (this.isButton) {
+            this.h = 20; // Hardcoded button height reset
+            this.pressed = false;
+            this.y = this.startY; // Ensure height reset doesn't shift it
+        }
+        if(this.type === 'invisible') this.color = 'rgba(0,0,0,0)';
+    }
+
+    draw(ctx, camX, camY) {
+        if (!this.active) return;
+        
+        if (this.type === 'spike') {
+            // Draw triangles
+            ctx.fillStyle = this.color;
+            let spikesCount = Math.floor(this.w / 20);
+            for(let i=0; i<spikesCount; i++) {
+                ctx.beginPath();
+                ctx.moveTo(this.x + i*20 - camX, this.y + this.h - camY);
+                ctx.moveTo(this.x + i*20 + 10 - camX, this.y - camY);
+                ctx.moveTo(this.x + i*20 + 20 - camX, this.y + this.h - camY);
+                ctx.fill();
+            }
+        } else if (this.isGoal) {
+            ctx.fillStyle = this.color;
+            ctx.fillRect(this.x - camX, this.y - camY, this.w, this.h);
+            // Door frame
+            ctx.strokeStyle = '#225522';
+            ctx.lineWidth = 4;
+            ctx.strokeRect(this.x - camX, this.y - camY, this.w, this.h);
+            // Knob
+            ctx.fillStyle = 'black';
+            ctx.beginPath();
+            ctx.arc(this.x + this.w - 10 - camX, this.y + this.h/2 - camY, 3, 0, Math.PI*2);
+            ctx.fill();
+        } else if (this.isButton) {
+             ctx.fillStyle = this.color;
+             // Round top
+             ctx.beginPath();
+             ctx.roundRect(this.x - camX, this.y - camY, this.w, this.h, [10, 10, 0, 0]);
+             ctx.fill();
+        } else {
+            super.draw(ctx, camX, camY);
+            // Detail logic for blocks
+            ctx.strokeStyle = 'rgba(0,0,0,0.2)';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(this.x - camX, this.y - camY, this.w, this.h);
+        }
+    }
+}
+
+// --- Particle System ---
+let particles = [];
+function createParticles(x, y, count, color) {
+    for (let i = 0; i < count; i++) {
+        particles.push({
+            x: x, y: y,
+            vx: (Math.random() - 0.5) * 10,
+            vy: (Math.random() - 0.5) * 10,
+            life: 30,
+            color: color,
+            size: Math.random() * 5 + 2
+        });
+    }
+}
+
+function updateDrawParticles(ctx, camX, camY) {
+    for (let i = particles.length - 1; i >= 0; i--) {
+        let p = particles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.life--;
+        p.size *= 0.9;
+        
+        ctx.fillStyle = p.color;
+        ctx.fillRect(p.x - camX, p.y - camY, p.size, p.size);
+        
+        if (p.life <= 0) particles.splice(i, 1);
+    }
+}
+
+// --- Utils ---
+function checkRectCollide(r1, r2) {
+    return (r1.x < r2.x + r2.w &&
+            r1.x + r1.w > r2.x &&
+            r1.y < r2.y + r2.h &&
+            r1.y + r1.h > r2.y);
+}
+
+function showMessage(text, duration = 1000) {
+    uiMsg.innerText = text;
+    uiMsg.style.opacity = 1;
+    setTimeout(() => {
+        uiMsg.style.opacity = 0;
+    }, duration);
+}
+
+// --- Level Logic ---
+
+let levels = [];
+let player = new Player(0, 0);
+
+function initLevels() {
+    levels = [
+        // LEVEL 1: The First Betrayal
+        {
+            title: "1. The First Betrayal",
+            start: { x: 50, y: 300 },
+            platforms: [
+                new Platform(0, 350, 150, 100), // Start Platform
+                new Platform(200, 350, 150, 20, 'vanish'), // The Trap
+                new Platform(400, 350, 400, 100), // End Platform
+                new Platform(700, 290, 40, 60, 'goal') // Goal
+            ],
+            update: function() { } 
+        },
+        
+        // LEVEL 2: The Hesitation Tax
+        {
+            title: "2. The Hesitation Tax",
+            start: { x: 50, y: 300 },
+            platforms: [
+                new Platform(0, 350, 800, 100), // Floor
+                new Platform(720, 290, 40, 60, 'goal'),
+                // Hidden Spikes (initially below ground)
+                new Platform(400, 360, 40, 40, 'spike'), 
+            ],
+            customState: { triggered: false, timer: 0 },
+            update: function() {
+                let p = this.platforms.find(x => x.type === 'spike');
+                
+                // Trigger Logic
+                if (!this.customState.triggered && player.x > 250) {
+                    this.customState.triggered = true;
+                }
+
+                if (this.customState.triggered) {
+                    // Move spikes up
+                    if (p.y > 310) {
+                        p.y -= 8; // FAST POP UP
+                    }
+                } else {
+                    // Keep buried
+                    p.y = 360; 
+                }
+            }
+        },
+
+        // LEVEL 3: The Fake Goal Conundrum
+        {
+            title: "3. Fake Goals",
+            start: { x: 50, y: 350 },
+            platforms: [
+                new Platform(0, 400, 800, 50), // Floor
+                
+                // Fake Path
+                new Platform(200, 350, 50, 50), // Step
+                new Platform(250, 290, 40, 60, 'fake_goal'), // Fake Door
+                
+                // Real Path
+                new Platform(400, 200, 50, 200), // High Wall
+                new Platform(300, 250, 50, 20, 'invisible'), // Hidden step
+                new Platform(500, 140, 40, 60, 'goal') // Real Goal high up
+            ],
+            update: function() {
+                // If player hits invisible block, make it slightly visible
+                let inv = this.platforms.find(x => x.type === 'invisible');
+                if (checkRectCollide(player, inv)) {
+                    inv.color = 'rgba(255, 255, 255, 0.5)';
+                }
+            }
+        },
+
+        // LEVEL 4: Button Hell & Moving Goal
+        {
+            title: "4. Regret",
+            start: { x: 50, y: 300 },
+            platforms: [
+                new Platform(0, 350, 250, 100), // Start Platform
+                new Platform(550, 350, 250, 100), // End Platform (The safe zone)
+                
+                // BUTTONS GALORE (Spaced out to act as platforms)
+                new Platform(150, 330, 40, 20, 'button'), // Safe starter button
+                
+                // Trap Buttons (Initially hidden)
+                // We space them so you MUST jump (no floor beneath)
+                new Platform(270, 330, 40, 20, 'button'), 
+                new Platform(350, 330, 40, 20, 'button'), 
+                new Platform(430, 330, 40, 20, 'button'), 
+                new Platform(510, 330, 40, 20, 'button'), 
+                
+                new Platform(250, 350, 300, 20, 'invisible'), // The Bridge
+                new Platform(700, 290, 40, 60, 'goal')
+            ],
+            customState: { timer: 0, goalMoved: false, floorDropping: false, buttonsActive: false },
+            setup: function() {
+                // Bridge starts SOLID and HIDDEN to allow walking
+                let bridge = this.platforms.find(x => x.type === 'invisible');
+                if(bridge) bridge.active = true;
+
+                // Hide Bridge Buttons (x > 250)
+                this.platforms.forEach(p => {
+                    if (p.isButton && p.x > 250) p.active = false;
+                });
+            },
+            update: function() {
+                
+                // Reveal buttons when goal moves
+                if (this.customState.floorDropping && !this.customState.buttonsActive) {
+                    this.customState.buttonsActive = true;
+                    
+                    // Reveal the bridge (Don't kill it!)
+                    let bridge = this.platforms.find(x => x.type === 'invisible');
+                    if(bridge) {
+                        bridge.color = '#555'; // Reveal it
+                        bridge.active = true;  // Keep it solid so you can stand on it while it falls
+                    }
+
+                    // Enable buttons - This gives you something to land on
+                    this.platforms.forEach(p => {
+                        if (p.isButton && p.x > 250) p.active = true;
+                    });
+                }
+
+                // Curse timer logic
+                if (gameState.controlsInverted || gameState.jumpIsDeath) {
+                    this.customState.timer--;
+                    uiMsg.innerText = `CURSED! WAIT: ${(this.customState.timer/60).toFixed(1)}`;
+                    uiMsg.style.opacity = 1;
+
+                    if (this.customState.timer <= 0) {
+                        gameState.controlsInverted = false;
+                        gameState.jumpIsDeath = false;
+                        showMessage("SAFE", 1000);
+                        // Re-enable bridge (if you survived somehow without it)
+                        // Or just let player finish
+                        let bridge = this.platforms.find(x => x.type === 'invisible');
+                        if (bridge) {
+                            bridge.color = '#555'; 
+                            bridge.active = true; 
+                        }
+                    }
+                }
+
+                // Falling Floor Logic
+                if (this.customState.floorDropping) {
+                    gameState.camera.shake = 2; // Rumble
+                    this.platforms.forEach(p => {
+                        // Drop the End platform and buttons (Bridge IS active now, so it falls too)
+                        if (p.x >= 250 && !p.isGoal && p.active) {
+                            p.y += 0.5; 
+                        }
+                    });
+                }
+            }
+        }
+    ];
+}
+
+function loadLevel(index) {
+    if (index >= levels.length) {
+        // Game Complete
+        uiTitle.innerText = "YOU BEAT THE DEVIL!";
+        gameState.levelIndex = 0; // Loop or stop
+        return;
+    }
+    
+    gameState.levelIndex = index;
+    gameState.controlsInverted = false;
+    gameState.jumpIsDeath = false;
+    gameState.levelComplete = false; // Reset Win Flag
+    gameState.camera.shake = 0;
+    
+    let level = levels[index];
+    
+    // Reset platforms
+    level.platforms.forEach(p => p.reset());
+    
+    // Run Level Setup (e.g. to hide bridge collisions)
+    if (level.setup) level.setup();
+
+    if (level.customState) {
+        level.customState.triggered = false;
+        level.customState.timer = 0;
+        level.customState.goalMoved = false;
+        level.customState.floorDropping = false;
+        level.customState.buttonsActive = false;
+    }
+
+    player.spawnX = level.start.x;
+    player.spawnY = level.start.y;
+    player.respawn();
+    
+    uiTitle.innerText = level.title;
+}
+
+function resetLevelState() {
+    gameState.controlsInverted = false;
+    gameState.jumpIsDeath = false;
+    // Note: Do NOT reset levelComplete here, only in loadLevel
+    let level = levels[gameState.levelIndex];
+    
+    level.platforms.forEach(p => p.reset());
+    
+    // Run Level Setup on Respawn too
+    if (level.setup) level.setup();
+
+    if (level.customState) {
+        level.customState.triggered = false;
+        level.customState.timer = 0;
+        level.customState.goalMoved = false;
+        level.customState.floorDropping = false;
+        level.customState.buttonsActive = false;
+    }
+}
+
+function triggerLevelEvent(event) {
+    if (event === 'button_press') {
+        showMessage("CONTROLS INVERTED!", 2000);
+        gameState.controlsInverted = true;
+        // gameState.jumpIsDeath = true; // Removed death on jump for this level to make it playable with moving goal
+        levels[gameState.levelIndex].customState.timer = 180; 
+    }
+}
+
+function killPlayer(reason = "") {
+    if (player.dead) return;
+    
+    player.dead = true;
+    gameState.deaths++;
+    uiDeaths.innerText = `DEATHS: ${gameState.deaths}`;
+    gameState.camera.shake = 20;
+    createParticles(player.x + 15, player.y + 15, 30, C_PLAYER);
+    
+    if (reason) showMessage(reason, 1000);
+
+    setTimeout(() => {
+        player.respawn();
+    }, 800);
+}
+
+function winLevel() {
+    if (gameState.levelComplete) return; // Prevent double winning
+    gameState.levelComplete = true;
+
+    showMessage("LEVEL CLEAR!", 1000);
+    setTimeout(() => {
+        loadLevel(gameState.levelIndex + 1);
+    }, 1000);
+}
+
+// --- Main Loop ---
+
+function gameLoop() {
+    // Update
+    if (gameState.camera.shake > 0) gameState.camera.shake *= 0.9;
+    
+    player.update();
+    
+    // Level Update
+    if (levels[gameState.levelIndex].update) {
+        levels[gameState.levelIndex].update();
+    }
+
+    // Draw
+    ctx.fillStyle = C_BG;
+    ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+    let camX = Math.random() * gameState.camera.shake - (gameState.camera.shake/2);
+    let camY = Math.random() * gameState.camera.shake - (gameState.camera.shake/2);
+
+    let currentLvl = levels[gameState.levelIndex];
+    currentLvl.platforms.forEach(p => p.draw(ctx, camX, camY));
+    
+    player.draw(ctx, camX, camY);
+    updateDrawParticles(ctx, camX, camY);
+
+    requestAnimationFrame(gameLoop);
+}
+
+// --- Input Listeners ---
+
+window.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowLeft' || e.key === 'a') keys.left = true;
+    if (e.key === 'ArrowRight' || e.key === 'd') keys.right = true;
+    if (e.key === 'ArrowUp' || e.key === 'w' || e.key === ' ') keys.up = true;
+});
+
+window.addEventListener('keyup', (e) => {
+    if (e.key === 'ArrowLeft' || e.key === 'a') keys.left = false;
+    if (e.key === 'ArrowRight' || e.key === 'd') keys.right = false;
+    if (e.key === 'ArrowUp' || e.key === 'w' || e.key === ' ') keys.up = false;
+});
+
+// Mobile Controls Logic
+const btnLeft = document.getElementById('btn-left');
+const btnRight = document.getElementById('btn-right');
+const btnJump = document.getElementById('btn-jump');
+
+const addInputListeners = (btn, key) => {
+    // Touch Events
+    btn.addEventListener('touchstart', (e) => { e.preventDefault(); keys[key] = true; });
+    btn.addEventListener('touchend', (e) => { e.preventDefault(); keys[key] = false; });
+    
+    // Mouse Events (For desktop testing)
+    btn.addEventListener('mousedown', (e) => { e.preventDefault(); keys[key] = true; });
+    btn.addEventListener('mouseup', (e) => { e.preventDefault(); keys[key] = false; });
+    btn.addEventListener('mouseleave', (e) => { e.preventDefault(); keys[key] = false; }); // Safety
+};
+
+addInputListeners(btnLeft, 'left');
+addInputListeners(btnRight, 'right');
+addInputListeners(btnJump, 'up');
+
+// Start Game
+initLevels();
+loadLevel(0);
+requestAnimationFrame(gameLoop);
+
+</script>
+</body>
+</html>
